@@ -201,6 +201,7 @@ body {
 
 .time-series-canvas {
   display: block;
+  cursor: col-resize;
 }
 
 /* ── Panels ───────────────────────────────────────────────────────── */

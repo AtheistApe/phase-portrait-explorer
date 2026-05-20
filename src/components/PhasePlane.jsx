@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSystemStore } from '../store/systemStore.js';
+import { sampleTrajectoryAtT } from '../utils/trajectory.js';
 
 // Perceptually distinct trajectory colors, cycled by index.
 const TRAJ_COLORS = [
@@ -104,7 +105,12 @@ function formatTick(v, step) {
 function drawVectorField(ctx, f, g, params, view, density, width, height, transforms) {
   const cellW = width / density;
   const cellH = height / density;
-  const arrowLen = Math.min(cellW, cellH) * 0.42;
+  const cellMin = Math.min(cellW, cellH);
+  // Arrows take up ~85% of the cell so they read clearly at any density.
+  const arrowLen = cellMin * 0.85;
+  // Line width also scales with density so arrows look proportionate
+  // both when the grid is coarse and when it's fine.
+  const lineW = Math.max(1.1, Math.min(2.6, cellMin * 0.05));
 
   // Two passes: first compute all magnitudes for normalization, then draw.
   const vectors = [];
@@ -131,15 +137,24 @@ function drawVectorField(ctx, f, g, params, view, density, width, height, transf
   if (maxMag === 0) return;
 
   ctx.lineCap = 'round';
+  ctx.lineWidth = lineW;
   for (const v of vectors) {
     if (v.mag < 1e-9) continue;
-    // Unit direction in screen coords. Note y flips.
-    const ux = v.dx / v.mag;
-    const uy = -v.dy / v.mag;
-    // Length scaled by log of magnitude relative to max; keeps fast and
-    // slow regions both visible without one swamping the other.
-    const lenScale = 0.3 + 0.7 * Math.log1p(v.mag / (maxMag * 0.2 + 1e-9)) / Math.log1p(5);
-    const L = arrowLen * Math.min(1, Math.max(0.2, lenScale));
+    // Direction in screen pixels, accounting for the (typically non-uniform)
+    // world→screen scaling. The trajectory tangent at this point in screen
+    // pixels is parallel to (dx·sx, -dy·sy), so the arrow must use that
+    // direction — not the unit vector of (dx, -dy) in world coords — to
+    // appear tangent to the trajectories drawn through this neighborhood.
+    const sdx = v.dx * transforms.sx;
+    const sdy = -v.dy * transforms.sy;
+    const smag = Math.hypot(sdx, sdy);
+    if (smag < 1e-12) continue;
+    const ux = sdx / smag;
+    const uy = sdy / smag;
+    // Length gradient still keyed to the world-space magnitude, which is
+    // the intrinsic flow speed students reason about.
+    const lenScale = 0.55 + 0.45 * Math.tanh(2 * v.mag / (maxMag + 1e-9));
+    const L = arrowLen * lenScale;
     const x0 = v.cx - ux * L * 0.5;
     const y0 = v.cy - uy * L * 0.5;
     const x1 = v.cx + ux * L * 0.5;
@@ -148,14 +163,13 @@ function drawVectorField(ctx, f, g, params, view, density, width, height, transf
     // Color encodes magnitude: a cool→warm ramp.
     const t = Math.min(1, v.mag / (maxMag * 0.6));
     const hue = 200 - 160 * t; // 200 (blue) → 40 (amber)
-    ctx.strokeStyle = `hsla(${hue}, 70%, 60%, 0.55)`;
-    ctx.lineWidth = 1.1;
+    ctx.strokeStyle = `hsla(${hue}, 75%, 62%, 0.7)`;
 
     ctx.beginPath();
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
     // Arrowhead.
-    const ah = L * 0.32;
+    const ah = L * 0.3;
     const aAng = 0.5;
     const cosA = Math.cos(aAng);
     const sinA = Math.sin(aAng);
@@ -249,6 +263,33 @@ function drawEquilibria(ctx, equilibria, selected, transforms) {
   }
 }
 
+function drawScrubMarkers(ctx, trajectories, scrubT, transforms) {
+  if (scrubT === null || scrubT === undefined) return;
+  for (let i = 0; i < trajectories.length; i++) {
+    const tr = trajectories[i];
+    const sample = sampleTrajectoryAtT(tr, scrubT);
+    if (!sample) continue;
+    const px = transforms.toScreenX(sample.x);
+    const py = transforms.toScreenY(sample.y);
+    const color = TRAJ_COLORS[i % TRAJ_COLORS.length];
+
+    // Halo for visibility against the trajectory it sits on.
+    ctx.fillStyle = 'rgba(10,12,18,0.85)';
+    ctx.beginPath();
+    ctx.arc(px, py, 7.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Filled marker.
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
 export function PhasePlane() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -264,6 +305,7 @@ export function PhasePlane() {
   const trajectories = useSystemStore((s) => s.trajectories);
   const equilibria = useSystemStore((s) => s.equilibria);
   const selectedEquilibrium = useSystemStore((s) => s.selectedEquilibrium);
+  const scrubT = useSystemStore((s) => s.scrubT);
   const addTrajectory = useSystemStore((s) => s.addTrajectory);
   const selectEquilibrium = useSystemStore((s) => s.selectEquilibrium);
 
@@ -302,6 +344,7 @@ export function PhasePlane() {
     }
     drawTrajectories(ctx, trajectories, view, t);
     drawEquilibria(ctx, equilibria, selectedEquilibrium, t);
+    drawScrubMarkers(ctx, trajectories, scrubT, t);
 
     // Hover crosshair with world-coord readout.
     if (hover) {
@@ -330,7 +373,7 @@ export function PhasePlane() {
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
       ctx.fillText(label, clampX, ly);
     }
-  }, [size, view, f, g, paramValues, showField, fieldDensity, trajectories, equilibria, selectedEquilibrium, hover]);
+  }, [size, view, f, g, paramValues, showField, fieldDensity, trajectories, equilibria, selectedEquilibrium, scrubT, hover]);
 
   // Pointer handling.
   const onPointerMove = useCallback((e) => {

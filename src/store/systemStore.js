@@ -88,6 +88,7 @@ export const useSystemStore = create((set, get) => ({
   trajectories: [],
   equilibria: [],
   selectedEquilibrium: null,
+  scrubT: null,
 
   // Actions.
   setExpressions: (fExpr, gExpr) => {
@@ -209,6 +210,8 @@ export const useSystemStore = create((set, get) => ({
   },
 
   selectEquilibrium: (eq) => set({ selectedEquilibrium: eq }),
+
+  setScrubT: (t) => set({ scrubT: t }),
 }));
 
 // Initialize equilibria & sample trajectories for the first preset on load.
