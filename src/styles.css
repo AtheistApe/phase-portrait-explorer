@@ -129,7 +129,7 @@ body {
 /* ── Main layout ──────────────────────────────────────────────────── */
 .app-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 6px var(--right-width, 440px);
   gap: 0;
   overflow: hidden;
   min-height: 0;
@@ -137,9 +137,9 @@ body {
 
 .col-left {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 220px;
-  border-right: 1px solid var(--border);
+  grid-template-rows: minmax(0, 1fr) 6px var(--time-height, 240px);
   min-height: 0;
+  min-width: 0;
 }
 
 .col-right {
@@ -149,11 +149,65 @@ body {
   padding: 16px;
   gap: 16px;
   background: var(--bg-elev);
+  min-width: 0;
 }
 
 .col-right::-webkit-scrollbar { width: 8px; }
 .col-right::-webkit-scrollbar-track { background: transparent; }
 .col-right::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+/* ── Splitters ────────────────────────────────────────────────────── */
+.splitter {
+  background: var(--border);
+  position: relative;
+  transition: background 0.12s;
+  user-select: none;
+  touch-action: none;
+  z-index: 2;
+}
+
+.splitter::before {
+  /* Wider invisible hit area so the splitter is easy to grab without
+     making the visible bar bulky. */
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: -4px;
+  right: -4px;
+}
+
+.splitter-col {
+  cursor: col-resize;
+}
+
+.splitter-row {
+  cursor: row-resize;
+}
+
+.splitter:hover,
+.splitter:active {
+  background: var(--accent);
+}
+
+/* Document-wide cursor and selection lock while a splitter is being dragged.
+   The :is(.is-resizing-col, .is-resizing-row) * trick forces every element
+   to inherit the resize cursor so it doesn't flicker as the pointer moves
+   across the layout. */
+body.is-resizing-col,
+body.is-resizing-row {
+  user-select: none;
+}
+
+body.is-resizing-col,
+body.is-resizing-col * {
+  cursor: col-resize !important;
+}
+
+body.is-resizing-row,
+body.is-resizing-row * {
+  cursor: row-resize !important;
+}
 
 /* ── Phase plane ──────────────────────────────────────────────────── */
 .phase-pane {
@@ -201,8 +255,8 @@ body {
 
 /* ── Time series ──────────────────────────────────────────────────── */
 .time-pane {
-  border-top: 1px solid var(--border);
   min-height: 0;
+  min-width: 0;
 }
 
 .time-series-container {
@@ -552,11 +606,12 @@ body {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) auto;
   }
-  .col-left {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
   .col-right {
     max-height: 50vh;
+    border-top: 1px solid var(--border);
+  }
+  /* Splitters don't make sense once we've collapsed to one column. */
+  .splitter-col {
+    display: none;
   }
 }
