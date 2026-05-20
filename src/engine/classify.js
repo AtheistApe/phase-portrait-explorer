@@ -66,7 +66,7 @@ export function classifyJacobian(J) {
         label: repeated ? 'Stable degenerate node' : 'Stable node',
         stability: 'stable',
         detail: repeated
-          ? 'Repeated negative eigenvalue. Trajectories spiral tangentially into the equilibrium along a single eigendirection.'
+          ? 'Repeated negative eigenvalue. Trajectories approach the equilibrium tangentially along the single eigendirection.'
           : 'Two distinct negative eigenvalues. Trajectories approach the equilibrium tangent to the slower eigendirection.',
         eigenvalues: ev,
       };

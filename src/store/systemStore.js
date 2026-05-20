@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { compileSystem, extractParameters, validateSystem } from '../engine/parser.js';
+import { parseAndCompile } from '../engine/parser.js';
 import { integrateBoth } from '../engine/integrator.js';
 import { findEquilibria, jacobian } from '../engine/equilibria.js';
 import { classifyJacobian } from '../engine/classify.js';
@@ -7,15 +7,18 @@ import { PRESETS, PRESET_BY_ID } from '../presets/index.js';
 
 let nextTrajId = 1;
 
+// Distance under which we consider an equilibrium "the same one" across a
+// parameter change. Anchored to the typical view size; coarse but adequate.
+const SELECTION_PROXIMITY = 0.5;
+
 function compileFromExprs(fExpr, gExpr, paramValues) {
-  const v = validateSystem(fExpr, gExpr);
-  if (!v.ok) return { ok: false, error: v.error };
-  const paramNames = extractParameters([fExpr, gExpr]);
-  // Fill in missing params with current values or 0.
+  const r = parseAndCompile(fExpr, gExpr);
+  if (!r.ok) return { ok: false, error: r.error };
   const values = {};
-  for (const n of paramNames) values[n] = n in paramValues ? paramValues[n] : 0;
-  const { f, g } = compileSystem(fExpr, gExpr, paramNames);
-  return { ok: true, f, g, paramNames, paramValues: values };
+  for (const n of r.paramNames) {
+    values[n] = n in paramValues ? paramValues[n] : 0;
+  }
+  return { ok: true, f: r.f, g: r.g, paramNames: r.paramNames, paramValues: values };
 }
 
 function integrateTrajectory(state, x0, y0) {
@@ -32,7 +35,7 @@ function integrateTrajectory(state, x0, y0) {
   });
 }
 
-function recomputeEquilibria(state) {
+function computeEquilibria(state) {
   const eqs = findEquilibria({
     f: state.f,
     g: state.g,
@@ -43,41 +46,57 @@ function recomputeEquilibria(state) {
   });
   return eqs.map((e) => {
     const J = jacobian(state.f, state.g, e.x, e.y, state.paramValues);
-    const cls = classifyJacobian(J);
-    return { ...e, J, classification: cls };
+    return { ...e, J, classification: classifyJacobian(J) };
   });
 }
 
 function reintegrateAll(state) {
-  return state.trajectories.map((tr) => {
-    const path = integrateTrajectory(state, tr.x0, tr.y0);
-    return { ...tr, ...path };
-  });
+  return state.trajectories.map((tr) => ({
+    ...tr,
+    ...integrateTrajectory(state, tr.x0, tr.y0),
+  }));
 }
 
+/**
+ * After equilibria are recomputed, the previous selectedEquilibrium object
+ * reference is stale. Find the nearest equilibrium in the new array; if
+ * it's within SELECTION_PROXIMITY of the previous selection, keep the
+ * selection alive. Otherwise drop it.
+ */
+function reattachSelection(prevSel, newEquilibria) {
+  if (!prevSel || newEquilibria.length === 0) return null;
+  let best = null;
+  let bestDist = Infinity;
+  for (const eq of newEquilibria) {
+    const d = Math.hypot(eq.x - prevSel.x, eq.y - prevSel.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = eq;
+    }
+  }
+  return bestDist < SELECTION_PROXIMITY ? best : null;
+}
+
+// Initial state is built lazily by loadPreset after the store is created;
+// we just need enough to satisfy the type shape until then.
 const initialPreset = PRESETS[0];
-const initialCompile = compileFromExprs(
-  initialPreset.fExpr,
-  initialPreset.gExpr,
-  initialPreset.paramValues,
-);
 
 export const useSystemStore = create((set, get) => ({
-  // System definition.
-  fExpr: initialPreset.fExpr,
-  gExpr: initialPreset.gExpr,
-  paramNames: initialCompile.paramNames,
-  paramValues: initialCompile.paramValues,
-  f: initialCompile.f,
-  g: initialCompile.g,
+  // System definition (set by loadPreset call at the bottom of this file).
+  fExpr: '',
+  gExpr: '',
+  paramNames: [],
+  paramValues: {},
+  f: () => 0,
+  g: () => 0,
   parseError: null,
 
   // View.
-  view: { ...initialPreset.view },
+  view: { xMin: -3, xMax: 3, yMin: -3, yMax: 3 },
 
   // Integration.
-  dt: initialPreset.dt,
-  steps: initialPreset.steps,
+  dt: 0.02,
+  steps: 2000,
   escapeBound: 1e4,
 
   // Options.
@@ -90,7 +109,8 @@ export const useSystemStore = create((set, get) => ({
   selectedEquilibrium: null,
   scrubT: null,
 
-  // Actions.
+  // ── Actions ──────────────────────────────────────────────────────────
+
   setExpressions: (fExpr, gExpr) => {
     const current = get();
     const compiled = compileFromExprs(fExpr, gExpr, current.paramValues);
@@ -98,16 +118,8 @@ export const useSystemStore = create((set, get) => ({
       set({ fExpr, gExpr, parseError: compiled.error });
       return;
     }
-    const nextState = {
-      ...current,
-      fExpr,
-      gExpr,
-      f: compiled.f,
-      g: compiled.g,
-      paramNames: compiled.paramNames,
-      paramValues: compiled.paramValues,
-      parseError: null,
-    };
+    const nextState = { ...current, ...compiled, fExpr, gExpr, parseError: null };
+    const equilibria = computeEquilibria(nextState);
     set({
       fExpr,
       gExpr,
@@ -117,8 +129,8 @@ export const useSystemStore = create((set, get) => ({
       paramValues: compiled.paramValues,
       parseError: null,
       trajectories: reintegrateAll(nextState),
-      equilibria: recomputeEquilibria(nextState),
-      selectedEquilibrium: null,
+      equilibria,
+      selectedEquilibrium: reattachSelection(current.selectedEquilibrium, equilibria),
     });
   },
 
@@ -126,11 +138,12 @@ export const useSystemStore = create((set, get) => ({
     const current = get();
     const paramValues = { ...current.paramValues, [name]: value };
     const nextState = { ...current, paramValues };
+    const equilibria = computeEquilibria(nextState);
     set({
       paramValues,
       trajectories: reintegrateAll(nextState),
-      equilibria: recomputeEquilibria(nextState),
-      selectedEquilibrium: null,
+      equilibria,
+      selectedEquilibrium: reattachSelection(current.selectedEquilibrium, equilibria),
     });
   },
 
@@ -153,11 +166,10 @@ export const useSystemStore = create((set, get) => ({
       parseError: null,
       trajectories: [],
     };
-    // Seed sample trajectories from the preset.
-    const seeded = (preset.sampleICs ?? []).map(([x0, y0]) => {
-      const path = integrateTrajectory(nextState, x0, y0);
-      return { id: nextTrajId++, x0, y0, ...path };
-    });
+    const seeded = (preset.sampleICs ?? []).map(([x0, y0]) => ({
+      id: nextTrajId++, x0, y0,
+      ...integrateTrajectory(nextState, x0, y0),
+    }));
     set({
       fExpr: preset.fExpr,
       gExpr: preset.gExpr,
@@ -170,30 +182,35 @@ export const useSystemStore = create((set, get) => ({
       steps: preset.steps,
       parseError: null,
       trajectories: seeded,
-      equilibria: recomputeEquilibria(nextState),
+      equilibria: computeEquilibria(nextState),
       selectedEquilibrium: null,
+      scrubT: null,
     });
   },
 
   addTrajectory: (x0, y0) => {
     const state = get();
-    const path = integrateTrajectory(state, x0, y0);
     set({
       trajectories: [
         ...state.trajectories,
-        { id: nextTrajId++, x0, y0, ...path },
+        { id: nextTrajId++, x0, y0, ...integrateTrajectory(state, x0, y0) },
       ],
     });
   },
 
-  clearTrajectories: () => set({ trajectories: [] }),
+  clearTrajectories: () => set({ trajectories: [], scrubT: null }),
 
   removeTrajectory: (id) =>
     set({ trajectories: get().trajectories.filter((t) => t.id !== id) }),
 
   setView: (view) => {
     const state = { ...get(), view };
-    set({ view, equilibria: recomputeEquilibria(state), selectedEquilibrium: null });
+    const equilibria = computeEquilibria(state);
+    set({
+      view,
+      equilibria,
+      selectedEquilibrium: reattachSelection(state.selectedEquilibrium, equilibria),
+    });
   },
 
   setShowField: (showField) => set({ showField }),
@@ -214,8 +231,5 @@ export const useSystemStore = create((set, get) => ({
   setScrubT: (t) => set({ scrubT: t }),
 }));
 
-// Initialize equilibria & sample trajectories for the first preset on load.
-{
-  const store = useSystemStore.getState();
-  store.loadPreset(initialPreset.id);
-}
+// Seed the store with the first preset.
+useSystemStore.getState().loadPreset(initialPreset.id);

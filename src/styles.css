@@ -169,8 +169,19 @@ body {
 }
 
 .phase-plane-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   cursor: crosshair;
+}
+
+.phase-plane-scene {
+  pointer-events: none;
+}
+
+.phase-plane-overlay {
+  z-index: 1;
 }
 
 .phase-plane-hint {
